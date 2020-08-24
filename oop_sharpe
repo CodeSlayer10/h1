@@ -1,0 +1,145 @@
+import pandas as pd
+from pypfopt import EfficientFrontier
+from pypfopt import risk_models
+from pypfopt import expected_returns
+import datetime
+from pandas_datareader import data
+import numpy as np
+import scipy.optimize as solver
+import matplotlib.pyplot as plt
+from pypfopt.discrete_allocation import DiscreteAllocation, get_latest_prices
+from scipy.stats import norm
+
+
+class Sharpe:
+    def __init__(self, assets, start, end, n):
+        self.assets = assets
+        self.start = start
+        self.end = end
+        self.n = n
+        self.import_time_start = datetime.datetime.now()
+        self.starting_point = None
+        self.pfolio_returns_daily = []
+        self.pfolio_volatility_daily = []
+        self.all_weights = np.zeros((self.n, len(assets)))
+        self.sharpe_ratio = np.zeros(self.n)
+        self.pfolio_returns_annual = []
+        self.pfolio_volatility_annual = []
+        self.average_log_return = None
+        self.cov_mat = None
+        self.annually_cov = None
+        self.portfolios = None
+        self.df = None
+        self.max_sharpe_return = None
+        self.max_sharpe_risk = None
+        self.max_sharpe_weights = None
+        self.annual_return = None
+
+
+    def getDataAnd(self):
+        df = data.DataReader(self.assets, 'yahoo', start=self.start, end=self.end)['Adj Close']
+        self.df = df
+        for stock in self.assets:
+            df.loc[df[stock] == 'NaN', stock] = np.nan  # locate where i have ? and change it to nan
+            df.dropna(axis=0, inplace=True)
+            log_return = expected_returns.log_returns_from_prices(df)
+            self.average_log_return = log_return.mean()
+            # print(average_log_return)
+            self.annual_return = ((1 + self.average_log_return) ** 252 - 1)
+
+        print(df)
+
+        import_time_end = datetime.datetime.now()
+        print(import_time_end - self.import_time_start)
+        # print(annual_return)
+        self.cov_mat = log_return.cov()
+        self.annually_cov = self.cov_mat * 252
+
+    def CalPortData(self):
+        self.starting_point = datetime.datetime.now()
+        for x in range(self.n):
+            weights = np.random.rand(len(self.assets))
+            weights /= np.sum(weights)
+            self.all_weights[x, :] = weights
+            self.pfolio_returns_daily.append(np.sum(weights * self.average_log_return))
+            self.pfolio_volatility_daily.append(np.sqrt(np.dot(weights.T, np.dot(self.cov_mat, weights))))
+            self.pfolio_volatility_annual.append(np.sqrt(np.dot(weights.T, np.dot(self.annually_cov, weights))))
+
+        self.pfolio_returns_daily, self.pfoli_volatility_daily, self.pfolio_volatility_annual = \
+            np.array(self.pfolio_returns_daily), np.array(self.pfolio_volatility_daily), np.array(self.pfolio_volatility_annual)
+        self.pfolio_returns_annual = (((self.pfolio_returns_daily + 1) ** 252) - 1)
+        self.portfolios = pd.DataFrame({'return': self.pfolio_returns_annual,
+                                        'volatility': self.pfolio_volatility_annual})
+
+    def CalSharpe(self):
+        for x in range(self.n):
+            self.sharpe_ratio[x] = self.pfolio_returns_annual[x] / self.pfolio_volatility_annual[x]
+        print(f'max sharpe ratio {self.sharpe_ratio.max()}')
+        print(f'max sharpe ratio location {self.sharpe_ratio.argmax()}')
+        max_sharpe_location = self.sharpe_ratio.argmax()
+        self.max_sharpe_return = self.portfolios['return'][max_sharpe_location]
+        self.max_sharpe_risk = self.portfolios['volatility'][max_sharpe_location]
+        print(max_sharpe_location)
+
+        # max sharpe weights:
+        self.max_sharpe_weights = self.all_weights[max_sharpe_location, :]
+        print(f'max sharpe ratio weights: {self.max_sharpe_weights}')
+
+    def Calculate(self, portfolio_investment=6000, commission_for_many=0.009, commission_min_deal=1.4):
+        last_stock_price = get_latest_prices(self.df)
+        last_stock_price = np.array(last_stock_price, 'float')
+        money_each_stock_sharpe = self.max_sharpe_weights * portfolio_investment
+        # print(money_each_stock_sharpe) not necessary
+        no_stock_sharpe = money_each_stock_sharpe / last_stock_price
+        no_stock_sharpe = np.array(no_stock_sharpe, 'int')
+        min_div_many = np.array(commission_min_deal / commission_for_many, 'float')
+        no_stock_sharpe = no_stock_sharpe.tolist()
+
+        for x in no_stock_sharpe:
+            tot_com_for_stock = []
+            for self.n in tot_com_for_stock:
+                if x > min_div_many:
+                    self.n = x * commission_for_many
+                elif x == 0:
+                    self.n = 0
+                else:
+                    self.n = commission_min_deal
+
+        money_each_stock_sharpe_rounding = no_stock_sharpe * last_stock_price
+        if sum(money_each_stock_sharpe_rounding) > portfolio_investment:
+            print(f'you ar e over {sum(money_each_stock_sharpe_rounding) - portfolio_investment}$ from your maximum')
+
+        else:
+            print(f'you got {portfolio_investment - sum(money_each_stock_sharpe_rounding)}')
+
+        weights_round_sharpe = money_each_stock_sharpe_rounding / portfolio_investment
+        weights_sum_sharpe = sum(weights_round_sharpe)
+        print(weights_sum_sharpe)
+
+        assets_weights_sharpe = pd.DataFrame(
+            {'assets': self.assets, 'weights': weights_round_sharpe, 'number of shares': no_stock_sharpe,
+             'investment per asset': money_each_stock_sharpe_rounding})  # ,'commision':tot_com_for_stock})
+        print(assets_weights_sharpe)
+        print(sum(money_each_stock_sharpe_rounding))
+
+        risk_round_sharpe = np.sqrt(np.dot(weights_round_sharpe.T, np.dot(self.annually_cov, weights_round_sharpe)))
+        expected_re_sharpe = np.dot(weights_round_sharpe, self.annual_return)
+        print(f'risk after rounding: {risk_round_sharpe}')
+        print(f'expected return sharpe after rounding: {expected_re_sharpe}')
+        rf = 0.0025
+        print(f'sharpe ratio: {(expected_re_sharpe - rf) / risk_round_sharpe}')
+        end_point = datetime.datetime.now()
+
+        print(f"all calc time {end_point - self.starting_point}")
+
+
+assets = ['SPY', 'AAPL', 'UBS', 'KO', 'TSLA', 'JPM', 'AAL', 'BAC', 'GE', 'GM', 'SAP', 'MSFT', 'NFLX', 'BP', 'PK', 'LKQ',
+          'QSR', 'TEVA', 'FL', 'MCD', 'XLE', 'BRK-B', 'COTY', 'USB']
+start = datetime.datetime(2017, 1, 1)
+end = datetime.datetime.today()
+Item = Sharpe(assets, start, end, 200)
+Item.getDataAnd()
+Item.CalPortData()
+Item.CalSharpe()
+Item.Calculate(6000, 0.009, 1.4)
+
